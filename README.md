@@ -76,10 +76,10 @@ DARKGUARD provides a working baseline rather than an empty starter project. Part
 
 ### Open Challenges
 
-- **Easy:** [Error analysis and evaluation](https://github.com/radhikadhingra820-hue/DARKGUARD/issues/1)
-- **Medium:** [Improve short and subtle text detection](https://github.com/radhikadhingra820-hue/DARKGUARD/issues/2)
-- **Medium:** [Compare classifiers and improve detection](https://github.com/radhikadhingra820-hue/DARKGUARD/issues/3)
-- **Hard:** [Add multi-label detection and explanations](https://github.com/radhikadhingra820-hue/DARKGUARD/issues/4)
+- **Easy:** [Error analysis and evaluation](https://github.com/Geektoberfest/DARKGUARD/issues/1)
+- **Medium:** [Improve short and subtle text detection](https://github.com/Geektoberfest/DARKGUARD/issues/2)
+- **Medium:** [Compare classifiers and improve detection](https://github.com/Geektoberfest/DARKGUARD/issues/3)
+- **Hard:** [Add multi-label detection and explanations](https://github.com/Geektoberfest/DARKGUARD/issues/4)
 
 For ML changes, contributors should use held-out evaluation data and report accuracy, precision, recall, F1-score, and a short explanation of the approach. Difficulty labels describe the expected scope, not a guaranteed time to complete.
 
