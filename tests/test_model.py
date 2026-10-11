@@ -83,3 +83,40 @@ def test_explain_multilabel():
     scarcity_words = [t[0] for t in explanations["Scarcity"]]
     assert any(w in scarcity_words for w in ["left", "stock", "only"])
 
+
+def test_multilabel_probabilities_structure():
+    res = train_multilabel_model()
+    model, vec, mlb = res["model"], res["vectorizer"], res["mlb"]
+    pred = predict_multilabel("Limited time offer!", model, vec, mlb)
+    probs = pred["probabilities"]
+    assert len(probs) == len(res["classes"])
+    for cls in res["classes"]:
+        assert cls in probs
+        assert 0.0 <= probs[cls] <= 1.0
+
+
+def test_triple_compound_prediction_and_explanation():
+    res = train_multilabel_model()
+    model, vec, mlb = res["model"], res["vectorizer"], res["mlb"]
+    text = "Hurry! Only 2 left in stock. 40 people are viewing this right now!"
+    pred = predict_multilabel(text, model, vec, mlb, threshold=0.30)
+    assert pred["is_dark"] is True
+    # At least two categories should be captured from scarcity, social proof, urgency
+    overlap = set(pred["detected_categories"]).intersection({"Scarcity", "Social Proof", "Urgency"})
+    assert len(overlap) >= 2
+
+    expl = explain_multilabel(text, model, vec, mlb, top_n=2)
+    for cat in overlap:
+        assert len(expl[cat]) > 0
+
+
+def test_evaluate_multilabel_cli_run(tmp_path):
+    from evaluate_multilabel import run_multilabel_evaluation
+    out_file = tmp_path / "test_multilabel_report.md"
+    run_multilabel_evaluation(output_path=str(out_file))
+    assert out_file.exists()
+    content = out_file.read_text(encoding="utf-8")
+    assert "Multi-Label Detection" in content
+    assert "Category-Level Evaluation Results" in content
+
+
