@@ -83,3 +83,40 @@ def test_explain_prediction_with_svm_and_nb():
     assert isinstance(pos_nb, list)
     assert isinstance(neg_nb, list)
 
+
+def test_complement_nb_training_and_prediction():
+    res_cnb = train_model(classifier="complement_nb")
+    assert 0.85 <= res_cnb["accuracy"] <= 1.0
+    pred, conf, probs = predict_text("Only 2 seats left!", res_cnb["model"], res_cnb["vectorizer"])
+    assert pred in (0, 1)
+    assert 0.0 <= conf <= 1.0
+
+
+def test_classifier_tradeoff_consistency():
+    comp = compare_classifiers()
+    df = comp["comparison_table"]
+    # Check that comparison table has valid rows
+    lr_row = df[df["classifier_key"] == "logistic_regression"].iloc[0]
+    nb_row = df[df["classifier_key"] == "naive_bayes"].iloc[0]
+    svm_row = df[df["classifier_key"] == "linear_svm"].iloc[0]
+
+    # Verify key trade-offs:
+    # NB recall should be higher than LR recall
+    assert nb_row["recall"] >= lr_row["recall"]
+    # NB false negatives should be strictly lower than LR false negatives
+    assert nb_row["false_negatives"] < lr_row["false_negatives"]
+    # Calibrated SVM should have fewer false negatives than LR
+    assert svm_row["false_negatives"] < lr_row["false_negatives"]
+
+
+def test_compare_classifiers_cli_run(tmp_path):
+    from compare_classifiers import run_classifier_comparison
+    out_file = tmp_path / "test_comparison_report.md"
+    run_classifier_comparison(output_path=str(out_file))
+    assert out_file.exists()
+    content = out_file.read_text(encoding="utf-8")
+    assert "Classifier Comparison" in content
+    assert "Linear SVM" in content
+    assert "Confusion Matrices" in content
+
+
