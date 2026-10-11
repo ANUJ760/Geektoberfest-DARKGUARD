@@ -75,3 +75,56 @@ def test_explain_prediction_strips_prefix():
         assert not term.startswith("word__")
         assert not term.startswith("char__")
 
+
+def test_short_subtle_eval_set_schema():
+    import json
+    from pathlib import Path
+    eval_file = Path(__file__).resolve().parent / "short_subtle_eval_set.json"
+    assert eval_file.exists()
+    items = json.loads(eval_file.read_text(encoding="utf-8"))
+    assert len(items) == 30
+    for it in items:
+        assert "text" in it and len(it["text"].strip()) > 0
+        assert it["label"] in (0, 1)
+        assert "category" in it
+        assert "description" in it
+    dark_count = sum(1 for it in items if it["label"] == 1)
+    non_dark_count = sum(1 for it in items if it["label"] == 0)
+    assert dark_count == 15
+    assert non_dark_count == 15
+
+
+def test_legacy_train_model_compatibility():
+    res = train_model(use_enhanced=False)
+    assert 0.90 <= res["accuracy"] <= 1.0
+    pred, conf, _ = predict_text("Only 2 seats left!", res["model"], res["vectorizer"])
+    assert pred in (0, 1)
+
+
+def test_edge_case_inputs_prediction():
+    results = train_model(use_enhanced=True)
+    model, vec = results["model"], results["vectorizer"]
+
+    # Single-word urgency
+    pred_h, conf_h, _ = predict_text("Hurry!", model, vec)
+    assert pred_h == 1
+
+    # Single-word neutral
+    pred_s, conf_s, _ = predict_text("Shoes", model, vec)
+    assert pred_s == 0
+
+    # Minimal countdown
+    pred_c, conf_c, _ = predict_text("2 left", model, vec)
+    assert pred_c == 1
+
+
+def test_evaluate_short_text_cli_run(tmp_path):
+    from evaluate_short_text import evaluate_models
+    out_file = tmp_path / "test_short_report.md"
+    evaluate_models(output_path=str(out_file))
+    assert out_file.exists()
+    content = out_file.read_text(encoding="utf-8")
+    assert "Short and Subtle Text Detection" in content
+    assert "Benchmark Results" in content
+
+
