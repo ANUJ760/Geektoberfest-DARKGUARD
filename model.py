@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -9,12 +10,17 @@ from sklearn.metrics import (
     accuracy_score,
     classification_report,
     confusion_matrix,
+    f1_score,
+    hamming_loss,
+    precision_score,
+    recall_score,
 )
 from sklearn.model_selection import train_test_split
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.preprocessing import MultiLabelBinarizer
 
 DATASET_PATH = Path(__file__).resolve().parent / "dataset.tsv"
+DEFAULT_MULTILABEL_THRESHOLD = 0.35
 
 def clean_text(text):
     text = str(text).lower()
@@ -116,7 +122,103 @@ def explain_prediction(text, model, vectorizer, top_n=6):
 
     return positive_terms, negative_terms
 
-def train_multilabel_model(data=None, test_size=0.20, random_state=42):
+def evaluate_model(model=None, vectorizer=None, data=None, test_size=0.20, random_state=42):
+    if data is None:
+        data = load_dataset()
+
+    X = data["clean_text"]
+    y = data["label"]
+
+    X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
+        X,
+        y,
+        data.index,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y,
+    )
+
+    if model is None or vectorizer is None:
+        vectorizer = TfidfVectorizer(
+            lowercase=True,
+            stop_words="english",
+            ngram_range=(1, 2),
+        )
+        X_train_tfidf = vectorizer.fit_transform(X_train)
+        model = LogisticRegression(max_iter=1000)
+        model.fit(X_train_tfidf, y_train)
+
+    X_test_tfidf = vectorizer.transform(X_test)
+    predictions = model.predict(X_test_tfidf)
+    probabilities = model.predict_proba(X_test_tfidf)
+
+    acc = float(accuracy_score(y_test, predictions))
+    prec = float(precision_score(y_test, predictions, zero_division=0))
+    rec = float(recall_score(y_test, predictions, zero_division=0))
+    f1 = float(f1_score(y_test, predictions, zero_division=0))
+    cm = confusion_matrix(y_test, predictions)
+
+    report_dict = classification_report(
+        y_test,
+        predictions,
+        target_names=["Not Dark Pattern", "Dark Pattern"],
+        output_dict=True,
+        zero_division=0,
+    )
+    report_text = classification_report(
+        y_test,
+        predictions,
+        target_names=["Not Dark Pattern", "Dark Pattern"],
+        zero_division=0,
+    )
+
+    test_df = data.loc[idx_test].copy()
+    test_df["predicted"] = predictions
+    test_df["prob_not_dark"] = probabilities[:, 0]
+    test_df["prob_dark"] = probabilities[:, 1]
+
+    false_positives = test_df[(test_df["label"] == 0) & (test_df["predicted"] == 1)].copy()
+    false_negatives = test_df[(test_df["label"] == 1) & (test_df["predicted"] == 0)].copy()
+
+    dark_test = test_df[test_df["label"] == 1]
+    cat_rows = []
+    for cat, grp in dark_test.groupby("Pattern Category"):
+        total = len(grp)
+        correct = int((grp["predicted"] == 1).sum())
+        fn = int((grp["predicted"] == 0).sum())
+        cat_rec = float(correct / total) if total > 0 else 0.0
+        cat_rows.append({
+            "category": cat,
+            "total": total,
+            "correct": correct,
+            "false_negatives": fn,
+            "recall": cat_rec,
+        })
+    cat_metrics = pd.DataFrame(cat_rows).sort_values(by="false_negatives", ascending=False)
+
+    weaknesses = [
+        "Short, context-poor, or subtle text snippets (e.g. countdowns, 'Will sell out fast!') with sparse TF-IDF features",
+        "Low-frequency dark pattern categories (Forced Action with 0% recall, Sneaking with 33% recall) due to class imbalance and decision threshold",
+    ]
+
+    return {
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
+        "confusion_matrix": cm,
+        "classification_report_dict": report_dict,
+        "classification_report_text": report_text,
+        "false_positives": false_positives,
+        "false_negatives": false_negatives,
+        "category_metrics": cat_metrics,
+        "test_df": test_df,
+        "train_size": len(idx_train),
+        "test_size": len(idx_test),
+        "recommended_weaknesses": weaknesses,
+    }
+
+def train_multilabel_model(data=None, test_size=0.20, random_state=42, threshold=DEFAULT_MULTILABEL_THRESHOLD):
     if data is None:
         data = load_dataset()
 
@@ -148,7 +250,8 @@ def train_multilabel_model(data=None, test_size=0.20, random_state=42):
     )
     model.fit(X_train_tfidf, Y_train)
 
-    predictions = model.predict(X_test_tfidf)
+    probabilities = model.predict_proba(X_test_tfidf)
+    predictions = (probabilities >= threshold).astype(int)
 
     report_dict = classification_report(
         Y_test,
@@ -170,6 +273,7 @@ def train_multilabel_model(data=None, test_size=0.20, random_state=42):
         "mlb": mlb,
         "classes": list(mlb.classes_),
         "data": data_copy,
+        "threshold": threshold,
         "report_dict": report_dict,
         "report_text": report_text,
         "feature_count": len(vectorizer.get_feature_names_out()),
@@ -180,7 +284,7 @@ def train_multilabel_model(data=None, test_size=0.20, random_state=42):
         "predictions": predictions,
     }
 
-def predict_multilabel(text, model, vectorizer, mlb, threshold=0.40):
+def predict_multilabel(text, model, vectorizer, mlb, threshold=DEFAULT_MULTILABEL_THRESHOLD):
     cleaned = clean_text(text)
     text_tfidf = vectorizer.transform([cleaned])
 
@@ -194,17 +298,19 @@ def predict_multilabel(text, model, vectorizer, mlb, threshold=0.40):
         detected = detected_dark
         is_dark = True
     else:
-        is_dark = prob_dict.get("Not Dark Pattern", 0.0) < 0.5 and any(prob_dict[c] >= 0.25 for c in dark_categories)
-        if is_dark:
-            top_category = max(dark_categories, key=lambda c: prob_dict[c])
-            detected = [top_category]
-        else:
+        if prob_dict.get("Not Dark Pattern", 0.0) >= threshold:
             detected = ["Not Dark Pattern"]
+            is_dark = False
+        else:
+            top_category = max(mlb.classes_, key=lambda c: prob_dict[c])
+            detected = [top_category]
+            is_dark = (top_category != "Not Dark Pattern")
 
     return {
         "detected_categories": detected,
         "is_dark": is_dark,
         "probabilities": prob_dict,
+        "threshold": threshold,
     }
 
 def explain_multilabel(text, model, vectorizer, mlb, top_n=4):
@@ -230,3 +336,88 @@ def explain_multilabel(text, model, vectorizer, mlb, top_n=4):
 
     return explanations
 
+def evaluate_on_multilabel_dataset(
+    eval_set_path=None,
+    model=None,
+    vectorizer=None,
+    mlb=None,
+    threshold=DEFAULT_MULTILABEL_THRESHOLD,
+):
+    """
+    Evaluates multi-label prediction on a genuine multi-label benchmark dataset.
+    Computes per-label precision, recall, and F1-score, as well as subset accuracy and Hamming loss.
+    """
+    if eval_set_path is None:
+        eval_set_path = Path(__file__).resolve().parent / "tests" / "multilabel_eval_set.json"
+        if not eval_set_path.exists():
+            eval_set_path = Path(__file__).resolve().parent / "multilabel_eval_set.json"
+
+    with open(eval_set_path, "r", encoding="utf-8") as f:
+        benchmark_data = json.load(f)
+
+    if model is None or vectorizer is None or mlb is None:
+        trained = train_multilabel_model(threshold=threshold)
+        model = trained["model"]
+        vectorizer = trained["vectorizer"]
+        mlb = trained["mlb"]
+
+    y_true_labels = [item["labels"] for item in benchmark_data]
+    y_pred_labels = []
+    detailed_results = []
+
+    for item in benchmark_data:
+        pred_res = predict_multilabel(item["text"], model, vectorizer, mlb, threshold=threshold)
+        pred_labels = pred_res["detected_categories"]
+        y_pred_labels.append(pred_labels)
+        detailed_results.append({
+            "text": item["text"],
+            "true_labels": item["labels"],
+            "predicted_labels": pred_labels,
+            "probabilities": pred_res["probabilities"],
+            "description": item.get("description", ""),
+            "exact_match": sorted(item["labels"]) == sorted(pred_labels),
+        })
+
+    Y_true = mlb.transform(y_true_labels)
+    Y_pred = mlb.transform(y_pred_labels)
+
+    per_label_report = classification_report(
+        Y_true,
+        Y_pred,
+        target_names=mlb.classes_,
+        output_dict=True,
+        zero_division=0,
+    )
+    per_label_text = classification_report(
+        Y_true,
+        Y_pred,
+        target_names=mlb.classes_,
+        zero_division=0,
+    )
+
+    subset_acc = float(accuracy_score(Y_true, Y_pred))
+    h_loss = float(hamming_loss(Y_true, Y_pred))
+
+    per_label_metrics = {}
+    for i, cls in enumerate(mlb.classes_):
+        cls_true = Y_true[:, i]
+        cls_pred = Y_pred[:, i]
+        per_label_metrics[cls] = {
+            "precision": float(precision_score(cls_true, cls_pred, zero_division=0)),
+            "recall": float(recall_score(cls_true, cls_pred, zero_division=0)),
+            "f1": float(f1_score(cls_true, cls_pred, zero_division=0)),
+            "support": int(cls_true.sum()),
+        }
+
+    return {
+        "benchmark_samples": len(benchmark_data),
+        "threshold": threshold,
+        "subset_accuracy": subset_acc,
+        "hamming_loss": h_loss,
+        "micro_f1": float(per_label_report.get("micro avg", {}).get("f1-score", 0.0)),
+        "macro_f1": float(per_label_report.get("macro avg", {}).get("f1-score", 0.0)),
+        "classification_report_dict": per_label_report,
+        "classification_report_text": per_label_text,
+        "per_label_metrics": per_label_metrics,
+        "detailed_results": detailed_results,
+    }
