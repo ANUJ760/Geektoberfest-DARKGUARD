@@ -147,6 +147,102 @@ def explain_prediction(text, model, vectorizer, top_n=6):
 
     return positive_terms, negative_terms
 
+def evaluate_model(model=None, vectorizer=None, data=None, test_size=0.20, random_state=42):
+    if data is None:
+        data = load_dataset()
+
+    X = data["clean_text"]
+    y = data["label"]
+
+    X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
+        X,
+        y,
+        data.index,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y,
+    )
+
+    if model is None or vectorizer is None:
+        vectorizer = TfidfVectorizer(
+            lowercase=True,
+            stop_words="english",
+            ngram_range=(1, 2),
+        )
+        X_train_tfidf = vectorizer.fit_transform(X_train)
+        model = LogisticRegression(max_iter=1000)
+        model.fit(X_train_tfidf, y_train)
+
+    X_test_tfidf = vectorizer.transform(X_test)
+    predictions = model.predict(X_test_tfidf)
+    probabilities = model.predict_proba(X_test_tfidf)
+
+    acc = float(accuracy_score(y_test, predictions))
+    prec = float(precision_score(y_test, predictions, zero_division=0))
+    rec = float(recall_score(y_test, predictions, zero_division=0))
+    f1 = float(f1_score(y_test, predictions, zero_division=0))
+    cm = confusion_matrix(y_test, predictions)
+
+    report_dict = classification_report(
+        y_test,
+        predictions,
+        target_names=["Not Dark Pattern", "Dark Pattern"],
+        output_dict=True,
+        zero_division=0,
+    )
+    report_text = classification_report(
+        y_test,
+        predictions,
+        target_names=["Not Dark Pattern", "Dark Pattern"],
+        zero_division=0,
+    )
+
+    test_df = data.loc[idx_test].copy()
+    test_df["predicted"] = predictions
+    test_df["prob_not_dark"] = probabilities[:, 0]
+    test_df["prob_dark"] = probabilities[:, 1]
+
+    false_positives = test_df[(test_df["label"] == 0) & (test_df["predicted"] == 1)].copy()
+    false_negatives = test_df[(test_df["label"] == 1) & (test_df["predicted"] == 0)].copy()
+
+    dark_test = test_df[test_df["label"] == 1]
+    cat_rows = []
+    for cat, grp in dark_test.groupby("Pattern Category"):
+        total = len(grp)
+        correct = int((grp["predicted"] == 1).sum())
+        fn = int((grp["predicted"] == 0).sum())
+        cat_rec = float(correct / total) if total > 0 else 0.0
+        cat_rows.append({
+            "category": cat,
+            "total": total,
+            "correct": correct,
+            "false_negatives": fn,
+            "recall": cat_rec,
+        })
+    cat_metrics = pd.DataFrame(cat_rows).sort_values(by="false_negatives", ascending=False)
+
+    weaknesses = [
+        "Short, context-poor, or subtle text snippets (e.g. countdowns, 'Will sell out fast!') with sparse TF-IDF features",
+        "Low-frequency dark pattern categories (Forced Action with 0% recall, Sneaking with 33% recall) due to class imbalance and decision threshold",
+    ]
+
+    return {
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
+        "confusion_matrix": cm,
+        "classification_report_dict": report_dict,
+        "classification_report_text": report_text,
+        "false_positives": false_positives,
+        "false_negatives": false_negatives,
+        "category_metrics": cat_metrics,
+        "test_df": test_df,
+        "train_size": len(idx_train),
+        "test_size": len(idx_test),
+        "recommended_weaknesses": weaknesses,
+    }
+
 def compare_classifiers(data=None, test_size=0.20, random_state=42):
     if data is None:
         data = load_dataset()
@@ -230,4 +326,3 @@ def compare_classifiers(data=None, test_size=0.20, random_state=42):
             "with only 11 false negatives at the cost of higher false positives (27)."
         ),
     }
-
